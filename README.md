@@ -1,1 +1,87 @@
 # Harmonizer
+
+## Tokenization & Data Design
+
+### Output vocabulary: chord labels
+**Decision:** Define the output vocabulary as the full grid of 12 roots x 
+10 quality classes observed in the data (maj, min, dim, aug, dom7, min7, 
+maj7, hdim7, dim7, oth), plus a no-chord label `NC`: **121 classes total**. 
+This is used instead of either the 54 root-quality combinations literally 
+observed in the raw data or a reduced common-quality label set.
+
+**Why:** The label set must be closed under transposition, because the 
+training pipeline transposes every song into all 12 keys (see below). 
+Transposing a song containing G#:aug produces aug chords on all 12 roots, 
+most of which never appear in the untransposed data — so "the 54 observed 
+labels" stops being a valid vocabulary the moment augmentation runs. The 
+full root x quality grid is closed under transposition by construction. It 
+also preserves every harmonic distinction present in the source material, 
+and augmentation gives each rare quality class 12x the examples, spread 
+across all roots — so the long tail gets meaningfully more training signal 
+than it would in a single-key setup.
+
+**Considered instead:** (a) Keeping only the 54 observed labels — 
+contradicts transposition augmentation, as above. (b) Collapsing to a 
+reduced quality set (e.g. maj/min/dom7 + other) — simpler, with better 
+per-class accuracy, but erases real chords present in the source material.
+
+**Tradeoff:** Many of the 121 grid cells remain rare even after 
+augmentation, and the model will likely underperform or never predict 
+them. To account for this honestly, results are reported as both micro 
+accuracy (overall, dominated by common classes) and macro accuracy 
+(averaged per class, exposing long-tail performance) rather than a single 
+headline number.
+
+### Melody input representation: key transposition
+**Decision:** Augment the dataset by transposing every song into all 12 
+keys, and retain raw MIDI pitch (including octave) rather than abstracting 
+to pitch-class only. Melody events are encoded as two parallel inputs to keep the vocabulary smaller. 
+
+**Why:** Transposition augmentation teaches the model key invariance 
+directly from data (12x more training sequences), which is a cleaner path 
+to invariance than throwing away octave information architecturally. Octave 
+is preserved for melody input since it's real information the model can 
+use; it's dropped from chord *output* since chord labels here are voicing-
+free by design.
+
+**Considered instead:** Pitch-class-only melody encoding (also achieves key 
+invariance, but loses octave/register information that may correlate with 
+chord choice).
+
+**Tradeoff:** Larger effective dataset size and longer training time. Also 
+sets up straightforward extension to other MIDI datasets/genres later, since 
+the transposition pipeline is genre-agnostic.
+
+**Implementation note:** Train/val/test split is performed on original song 
+IDs *before* transposition, then each split is transposed independently. 
+Splitting after transposition would leak near-duplicate transposed versions 
+of the same song across splits and inflate validation accuracy.
+
+### Duration handling
+**Decision:** Represent duration as a categorical token per distinct 
+observed value (e.g. 0.5, 1.0, 1.5, including triplet values), rather than 
+quantizing to a fixed grid. Duration values occurring fewer than 10 times 
+in the training set are folded into a single `<RARE_DUR>` bucket token.
+
+**Why:** A fixed 16th-note grid would misrepresent triplet rhythms present 
+in the dataset by forcing them onto grid positions that don't reflect their 
+actual timing. Categorical tokens preserve exact rhythm values as they 
+appear in the source data. The rare-value fallback keeps the vocabulary 
+from being polluted by one-off/likely-erroneous duration values while 
+still allowing any duration to be handled gracefully at inference time.
+
+**Considered instead:** Fixed-grid quantization (simpler, standard in some 
+literature, but destroys triplet feel); continuous/regression-based 
+duration (more precise, but a worse fit for an otherwise categorical 
+pipeline).
+
+**Tradeoff:** Categorical duration tokens carry no inherent ordinality — 
+the model isn't told that 1.5 sits "between" 1.0 and 2.0, and can only 
+learn that relationship from co-occurrence patterns if there's enough data. 
+This is a known limitation of the current scheme, not something the 
+`<RARE_DUR>` bucket solves. At inference, any out-of-vocabulary duration 
+value falls back to `<RARE_DUR>` rather than erroring.
+
+### Genre Token
+
+**Decision and Why?:** Add a genre token for future dataset expansion purposes. The current dataset being considered is the Nottingham Music Dataset, which includes only folk song tunes. Adding future datasets is possible, but mixing between different genres like pop and folk leads to the model learning from contradictory styles and producing worse results.
