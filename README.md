@@ -5,7 +5,7 @@
 ### Output vocabulary: chord labels
 **Decision:** Define the output vocabulary as the full grid of 12 roots x 
 10 quality classes observed in the data (maj, min, dim, aug, dom7, min7, 
-maj7, hdim7, dim7, oth), plus a no-chord label `NC`: **121 classes total**. 
+maj7, hdim7, dim7, oth), plus a no-chord label `NC` and `<PAD>` (a special token in every vocab because every song has different lengths, but a training batch is a rectangular tensor): **122 classes total**. 
 This is used instead of either the 54 root-quality combinations literally 
 observed in the raw data or a reduced common-quality label set.
 
@@ -25,7 +25,7 @@ contradicts transposition augmentation, as above. (b) Collapsing to a
 reduced quality set (e.g. maj/min/dom7 + other) — simpler, with better 
 per-class accuracy, but erases real chords present in the source material.
 
-**Tradeoff:** Many of the 121 grid cells remain rare even after 
+**Tradeoff:** Many of the 122 grid cells remain rare even after 
 augmentation, and the model will likely underperform or never predict 
 them. To account for this honestly, results are reported as both micro 
 accuracy (overall, dominated by common classes) and macro accuracy 
@@ -84,4 +84,4 @@ value falls back to `<RARE_DUR>` rather than erroring.
 
 ### Genre Token
 
-**Decision and Why?:** Add a genre token for future dataset expansion purposes. The current dataset being considered is the Nottingham Music Dataset, which includes only folk song tunes. Adding future datasets is possible, but mixing between different genres like pop and folk leads to the model learning from contradictory styles and producing worse results.
+**Decision and Why?:** Add a genre token for future dataset expansion purposes. The current dataset being considered is the Nottingham Music Dataset, which includes only folk song tunes. Adding future datasets is possible, but mixing between different genres like pop and folk leads to the model learning from contradictory styles and producing worse results. Each input sequence is prefixed with a genre token (<folk> for all current data)
