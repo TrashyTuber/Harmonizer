@@ -6,7 +6,6 @@ class LSTMHarmonizer(nn.Module):
         super(LSTMHarmonizer, self).__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.dropout = nn.Dropout(dropout)
 
         self.pitch_embedding = nn.Embedding(pitch_vocab_size, pitch_embed_dim, padding_idx=0)
         self.dur_embedding = nn.Embedding(dur_vocab_size, dur_embed_dim, padding_idx=0)
