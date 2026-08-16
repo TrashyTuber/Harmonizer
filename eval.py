@@ -1,0 +1,161 @@
+import json
+
+import torch
+
+from model import LSTMHarmonizer
+from tokenizer import Tokenizer
+
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+
+tokenizer = Tokenizer.load("artifacts/tokenizer.json")
+config = {
+    "hidden_dim": 256,
+    "pitch_embed_dim": 128,
+    "dur_embed_dim": 64,
+}
+
+model = LSTMHarmonizer(pitch_vocab_size=len(tokenizer.pitch_stoi),
+                       dur_vocab_size=len(tokenizer.duration_stoi),
+                       chord_vocab_size=len(tokenizer.chord_stoi),
+                       pitch_embed_dim=config["pitch_embed_dim"],
+                       dur_embed_dim=config["dur_embed_dim"],
+                       hidden_dim=config["hidden_dim"]).to(device)
+
+model.load_state_dict(torch.load("artifacts/model.pt", map_location=device))
+model.eval()
+
+FUNCTION = {
+    "major": {
+        0: "T",   # I
+        2: "PD",  # ii
+        4: None,  # iii
+        5: "PD",  # IV
+        7: "D",   # V
+        9: "T",   # vi
+        11: "D",  # vii°
+    },
+    "minor": {
+        0: "T",   # i
+        2: "PD",  # ii°
+        3: "T",   # III
+        5: "PD",  # iv
+        7: "D",   # v/V
+        8: None,  # VI
+        10: None, # VII
+    },
+}
+
+ROOTS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+ROOT_TO_PC = {r: i for i, r in enumerate(ROOTS)}
+
+def chord_root(label):
+    if label == "NC":
+        return "NC"
+    return label.split(":")[0]
+
+def estimate_key(chord_labels):
+    # chord_labels: list of strings like "G:maj", "D:dom7", skip "NC"
+    real_chords = [c for c in chord_labels if c != "NC"]
+    if not real_chords:
+        return (0, "major")  # degenerate fallback
+
+    last_root_pc = ROOT_TO_PC[real_chords[-1].split(":")[0]]
+
+    best_score = -1
+    best_key = (0, "major")
+
+    for tonic_pc in range(12):
+        for mode in ["major", "minor"]:
+            diatonic_intervals = set(FUNCTION[mode].keys())
+            in_key_count = 0
+            for label in real_chords:
+                root = label.split(":")[0]
+                root_pc = ROOT_TO_PC[root]
+                interval = (root_pc - tonic_pc) % 12
+                if interval in diatonic_intervals:
+                    in_key_count += 1
+            coverage = in_key_count / len(real_chords)
+
+            cadence_bonus = 0.3 if last_root_pc == tonic_pc else 0.0
+            score = coverage + cadence_bonus
+
+            if score > best_score:
+                best_score = score
+                best_key = (tonic_pc, mode)
+
+    return best_key
+
+songs = [json.loads(l) for l in open("data/processed/val.jsonl")]
+
+all_preds = []
+all_targets = []
+
+exact_count = 0
+root_match_count = 0
+functional_match_count = 0
+total_notes = 0
+
+with torch.no_grad():
+    for song in songs:
+        pitch_ids, dur_ids, chord_ids = tokenizer.encode(song)
+        pitch_tensor = torch.tensor(pitch_ids).unsqueeze(0).to(device)
+        dur_tensor = torch.tensor(dur_ids).unsqueeze(0).to(device)
+
+        chord_pred = model(pitch_tensor, dur_tensor)
+        preds = chord_pred.argmax(-1).squeeze(0)
+        target = torch.tensor(chord_ids).to(device)
+
+        all_preds.append(preds)
+        all_targets.append(target)
+
+        pred_labels = tokenizer.decode_chords(preds.tolist())
+        true_labels = [n["chord"] for n in song["notes"]]
+        key = estimate_key(true_labels)
+
+        for pred_label, true_label in zip(pred_labels, true_labels):
+            total_notes += 1
+
+            exact_count += int(pred_label == true_label)
+
+            pred_root = chord_root(pred_label)
+            true_root = chord_root(true_label)
+            root_match_count += int(pred_root == true_root)
+
+            if pred_root == "NC" or true_root == "NC":
+                func_match = (pred_root == true_root)
+            else:
+                pred_interval = (ROOT_TO_PC[pred_root] - key[0]) % 12
+                true_interval = (ROOT_TO_PC[true_root] - key[0]) % 12
+                pred_func = FUNCTION[key[1]].get(pred_interval)
+                true_func = FUNCTION[key[1]].get(true_interval)
+
+                if pred_func is None or true_func is None:
+                    func_match = (pred_root == true_root)
+                else:
+                    func_match = (pred_func == true_func)
+
+            functional_match_count += int(func_match)
+
+        
+all_preds = torch.cat(all_preds)
+all_targets = torch.cat(all_targets)
+
+micro_accuracy = (all_preds == all_targets).float().mean().item()
+macro_accuracies = []
+for chord_idx in range(len(tokenizer.chord_stoi)):
+    mask = all_targets == chord_idx
+    if mask.sum() > 0:
+        class_accuracy = (all_preds[mask] == all_targets[mask]).float().mean().item()
+        macro_accuracies.append(class_accuracy)
+macro_accuracy = sum(macro_accuracies) / len(macro_accuracies) if macro_accuracies else 0.0
+
+note_exact_accuracy = exact_count / total_notes # Should be equal to micro_accuracy
+root_accuracy = root_match_count / total_notes
+functional_accuracy = functional_match_count / total_notes
+
+print(f"micro_accuracy={micro_accuracy:.4f}, macro_accuracy={macro_accuracy:.4f}, root_accuracy={root_accuracy:.4f}, functional_accuracy={functional_accuracy:.4f}")
+
+
+
+
+
