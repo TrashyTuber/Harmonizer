@@ -1,5 +1,46 @@
 # Harmonizer
 
+Harmonizer takes a monophonic melody and predicts a chord progression to accompany it, trained on the Nottingham folk dataset. The core is a bidirectional LSTM that reads pitch and duration as parallel input sequences and outputs a chord label at every timestep, framing harmonization as sequence labeling rather than free generation. Beyond the standard accuracy numbers, evaluation includes a custom functional accuracy that estimates each song's key and checks whether the model's mistakes still makes sense harmonically, rather than treating every wrong answer as equally wrong.
+
+## Results
+
+### Results Table
+| Model | Micro Acc | Macro Acc | Root Acc | Functional Acc |
+|-------|-----------|-----------|----------|-----------------|
+| BiLSTM baseline | 0.6497 | 0.4042 | 0.7239 | 0.7731 |
+| Majority class (G:major) | 0.22 | - | - | - |
+
+- **Micro accuracy** — exact chord match, every note weighted equally.
+- **Macro accuracy** — exact chord match, averaged per chord class rather than per note, so rare chord types count as much as common ones.
+- **Root accuracy** — credit given if the predicted chord's root matches, regardless of quality (e.g. predicting C:maj when the answer was C:dom7 still counts).
+- **Functional accuracy** — credit given if the predicted and true chords share the same harmonic function (tonic/predominant/dominant) relative to the song's estimated key, since multiple chords can serve the same musical role.
+
+## Data 
+
+The model is trained on the [Nottingham Music Database](https://github.com/jukedeck/nottingham-dataset), a collection 
+of ~1000 British/Irish folk melodies with aligned chord annotations, 
+originally in ABC notation and converted to MIDI.
+
+Songs are split 80/10/10 into train/val/test **before** any augmentation, 
+split by song ID so no melody (or a transposed variant of it) appears in 
+more than one split. Only the training split is augmented. Each training 
+song is transposed into all 12 keys (semitone shifts of -5 to +6), giving 
+the model roughly 12x more training sequences and teaching it key 
+invariance directly from data. Validation and test songs are left in their 
+original keys, so reported metrics reflect performance on real, unmodified melodies. 
+13 of 1,034 files were rejected during parsing as melody-only transcriptions with no accompaniment track
+
+| Split | Songs | Notes | Pitch range |
+|-------|-------|-------|-------------|
+| Train (post-transposition) | [9,792] | [1,870,332] | [50]–[94] |
+| Val | [102] | [18,034] | [55]–[86] |
+| Test | [103] | [19,053] | [57]–[84] |
+
+Chord labels are represented as root + quality (e.g. `C:maj`, `G:dom7`) 
+against a generated 12-root × 10-quality vocabulary (121 classes + `<PAD>`), 
+rather than a vocabulary collected from the raw data — see 
+[Tokenization Design](#tokenization--data-design) for the full reasoning.
+
 ## Tokenization & Data Design
 
 ### Output vocabulary: chord labels
@@ -53,7 +94,7 @@ sets up straightforward extension to other MIDI datasets/genres later, since
 the transposition pipeline is genre-agnostic.
 
 **Implementation note:** Train/val/test split is performed on original song 
-IDs *before* transposition, then each split is transposed independently. 
+IDs *before* transposition, then the training split is transposed independently. 
 Splitting after transposition would leak near-duplicate transposed versions 
 of the same song across splits and inflate validation accuracy.
 
@@ -84,4 +125,21 @@ value falls back to `<RARE_DUR>` rather than erroring.
 
 ### Genre Token
 
-**Decision and Why?:** Add a genre token for future dataset expansion purposes. The current dataset being considered is the Nottingham Music Dataset, which includes only folk song tunes. Adding future datasets is possible, but mixing between different genres like pop and folk leads to the model learning from contradictory styles and producing worse results. Each input sequence is prefixed with a genre token (<folk> for all current data)
+**Decision and Why?:** Add a genre token for future dataset expansion purposes. The current dataset being considered is the Nottingham Music Dataset, which includes only folk song tunes. Adding future datasets is possible, but mixing between different genres like pop and folk leads to the model learning from contradictory styles and producing worse results. Each input sequence is prefixed with a genre token (`<folk>` for all current data)
+
+## Training Setup
+
+## Findings
+
+## How To Run
+
+```bash
+git clone --depth 1 https://github.com/jukedeck/nottingham-dataset data/nottingham
+uv run python scripts/parse.py
+uv run python scripts/split.py
+uv run wandb login
+uv run python train.py
+uv run python eval.py
+```
+
+## Roadmap

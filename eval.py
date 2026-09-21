@@ -1,9 +1,9 @@
 import json
-
 import torch
 
 from model import LSTMHarmonizer
 from tokenizer import Tokenizer
+from decode import viterbi_decode
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
@@ -53,6 +53,9 @@ def chord_root(label):
         return "NC"
     return label.split(":")[0]
 
+def count_changes(labels):
+    return sum(1 for i in range(1, len(labels)) if labels[i] != labels[i-1])
+
 def estimate_key(chord_labels):
     # chord_labels: list of strings like "G:maj", "D:dom7", skip "NC"
     real_chords = [c for c in chord_labels if c != "NC"]
@@ -94,6 +97,10 @@ exact_count = 0
 root_match_count = 0
 functional_match_count = 0
 total_notes = 0
+pred_changes = 0
+true_changes = 0
+
+SWITCH_PENALTY = 0.25
 
 with torch.no_grad():
     for song in songs:
@@ -102,7 +109,9 @@ with torch.no_grad():
         dur_tensor = torch.tensor(dur_ids).unsqueeze(0).to(device)
 
         chord_pred = model(pitch_tensor, dur_tensor)
-        preds = chord_pred.argmax(-1).squeeze(0)
+        logits = chord_pred.squeeze(0).cpu()
+        pred_ids = viterbi_decode(logits, switch_penalty=SWITCH_PENALTY)
+        preds = torch.tensor(pred_ids).to(device)
         target = torch.tensor(chord_ids).to(device)
 
         all_preds.append(preds)
@@ -111,6 +120,9 @@ with torch.no_grad():
         pred_labels = tokenizer.decode_chords(preds.tolist())
         true_labels = [n["chord"] for n in song["notes"]]
         key = estimate_key(true_labels)
+
+        pred_changes += count_changes(pred_labels)
+        true_changes += count_changes(true_labels)
 
         for pred_label, true_label in zip(pred_labels, true_labels):
             total_notes += 1
@@ -140,6 +152,9 @@ with torch.no_grad():
 all_preds = torch.cat(all_preds)
 all_targets = torch.cat(all_targets)
 
+avg_pred_changes = pred_changes / len(songs)
+avg_true_changes = true_changes / len(songs)
+
 micro_accuracy = (all_preds == all_targets).float().mean().item()
 macro_accuracies = []
 for chord_idx in range(len(tokenizer.chord_stoi)):
@@ -154,8 +169,5 @@ root_accuracy = root_match_count / total_notes
 functional_accuracy = functional_match_count / total_notes
 
 print(f"micro_accuracy={micro_accuracy:.4f}, macro_accuracy={macro_accuracy:.4f}, root_accuracy={root_accuracy:.4f}, functional_accuracy={functional_accuracy:.4f}")
-
-
-
-
+print(f"avg_pred_changes={avg_pred_changes:.4f}, avg_true_changes={avg_true_changes:.4f}")
 
