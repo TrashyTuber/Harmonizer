@@ -17,7 +17,7 @@ from pathlib import Path
 import pretty_midi
 import torch
 
-from decode import viterbi_decode
+from decode import transition_viterbi_decode, viterbi_decode
 from model import LSTMHarmonizer
 from tokenizer import Tokenizer
 
@@ -107,6 +107,12 @@ def main() -> None:
         default=None,
         help="decode with Viterbi smoothing at this penalty instead of per-note argmax",
     )
+    ap.add_argument(
+        "--lam",
+        type=float,
+        default=None,
+        help="decode with the learned transition matrix at this weight",
+    )
     args = ap.parse_args()
 
     songs = [json.loads(l) for l in open(args.split)]
@@ -140,7 +146,12 @@ def main() -> None:
             torch.tensor(pitch_ids).unsqueeze(0).to(device),
             torch.tensor(dur_ids).unsqueeze(0).to(device),
         ).squeeze(0).cpu()
-    if args.switch_penalty is not None:
+    if args.lam is not None:
+        logT = torch.load("artifacts/transition_matrix.pt")
+        logT[:, tokenizer.chord_stoi["<PAD>"]] = float("-inf")
+        pred_ids = transition_viterbi_decode(logits, logT, args.lam)
+        pred_name = f"{song['file'].removesuffix('.mid')}_pred_transition.mid"
+    elif args.switch_penalty is not None:
         pred_ids = viterbi_decode(logits, args.switch_penalty)
         pred_name = f"{song['file'].removesuffix('.mid')}_pred_viterbi.mid"
     else:

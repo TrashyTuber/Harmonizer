@@ -3,7 +3,7 @@ import torch
 
 from model import LSTMHarmonizer
 from tokenizer import Tokenizer
-from decode import viterbi_decode
+from decode import transition_viterbi_decode
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
@@ -100,7 +100,8 @@ total_notes = 0
 pred_changes = 0
 true_changes = 0
 
-SWITCH_PENALTY = 0.25
+lam = 0.05
+logT = torch.load("artifacts/transition_matrix.pt")
 
 with torch.no_grad():
     for song in songs:
@@ -110,7 +111,7 @@ with torch.no_grad():
 
         chord_pred = model(pitch_tensor, dur_tensor)
         logits = chord_pred.squeeze(0).cpu()
-        pred_ids = viterbi_decode(logits, switch_penalty=SWITCH_PENALTY)
+        pred_ids = transition_viterbi_decode(logits, logT, lam)
         preds = torch.tensor(pred_ids).to(device)
         target = torch.tensor(chord_ids).to(device)
 
