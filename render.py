@@ -18,7 +18,7 @@ import pretty_midi
 import torch
 
 from decode import transition_viterbi_decode, viterbi_decode
-from model import LSTMHarmonizer
+from checkpoint import load_model
 from tokenizer import Tokenizer
 
 TEMPO = 110  # BPM; folk tunes sit comfortably here
@@ -98,7 +98,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("file", nargs="?", default=None, help="song filename within the split")
     ap.add_argument("--split", type=Path, default=Path("data/processed/val.jsonl"))
-    ap.add_argument("--checkpoint", type=Path, default=Path("artifacts/model.pt"))
+    ap.add_argument("--checkpoint", type=Path, default=Path("artifacts/lstm.pt"))
     ap.add_argument("--out-dir", type=Path, default=Path("artifacts/renders"))
     ap.add_argument("--list", action="store_true", help="list songs in the split and exit")
     ap.add_argument(
@@ -129,16 +129,7 @@ def main() -> None:
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     tokenizer = Tokenizer.load("artifacts/tokenizer.json")
-    model = LSTMHarmonizer(
-        pitch_vocab_size=len(tokenizer.pitch_stoi),
-        dur_vocab_size=len(tokenizer.duration_stoi),
-        chord_vocab_size=len(tokenizer.chord_stoi),
-        pitch_embed_dim=128,
-        dur_embed_dim=64,
-        hidden_dim=256,
-    ).to(device)
-    model.load_state_dict(torch.load(args.checkpoint, map_location=device))
-    model.eval()
+    model, config = load_model(args.checkpoint, tokenizer, device)
 
     pitch_ids, dur_ids, _ = tokenizer.encode(song)
     with torch.no_grad():
@@ -146,17 +137,18 @@ def main() -> None:
             torch.tensor(pitch_ids).unsqueeze(0).to(device),
             torch.tensor(dur_ids).unsqueeze(0).to(device),
         ).squeeze(0).cpu()
+    logits[:, tokenizer.chord_stoi["<PAD>"]] = float("-inf")
     if args.lam is not None:
         logT = torch.load("artifacts/transition_matrix.pt")
         logT[:, tokenizer.chord_stoi["<PAD>"]] = float("-inf")
         pred_ids = transition_viterbi_decode(logits, logT, args.lam)
-        pred_name = f"{song['file'].removesuffix('.mid')}_pred_transition.mid"
+        pred_name = f"{song['file'].removesuffix('.mid')}_{config['arch']}_pred_transition.mid"
     elif args.switch_penalty is not None:
         pred_ids = viterbi_decode(logits, args.switch_penalty)
-        pred_name = f"{song['file'].removesuffix('.mid')}_pred_viterbi.mid"
+        pred_name = f"{song['file'].removesuffix('.mid')}_{config['arch']}_pred_viterbi.mid"
     else:
         pred_ids = logits.argmax(-1).tolist()
-        pred_name = f"{song['file'].removesuffix('.mid')}_pred.mid"
+        pred_name = f"{song['file'].removesuffix('.mid')}_{config['arch']}_pred.mid"
     pred_labels = tokenizer.decode_chords(pred_ids)
     true_labels = [n["chord"] for n in song["notes"]]
 

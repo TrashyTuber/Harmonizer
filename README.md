@@ -10,9 +10,12 @@ Harmonizer takes a monophonic melody and predicts a chord progression to accompa
 | Model | Micro | Macro | Root | Functional |
 |---|---|---|---|---|
 | Majority class (G:maj) | 0.2499 | — | — | — |
-| BiLSTM (2.57M params) | 0.6497 | 0.4042 | 0.7239 | 0.7731 |
+| BiLSTM (2.57M params) | 0.634 ± 0.010 | 0.372 ± 0.021 | 0.700 ± 0.012 | 0.748 ± 0.010 |
+| Transformer (2.46M params) | 0.584 ± 0.002 | 0.332 ± 0.008 | 0.645 ± 0.001 | 0.695 ± 0.002 |
 
-### Decoding ablation (BiLSTM, val split)
+*3 training runs per model (2 seeded, 1 unseeded)*
+
+### Decoding ablation (original single-run BiLSTM, `artifacts/model.pt`, val split)
 
 | Decoder | Micro | Macro | Root | Functional | Changes/song |
 |---|---|---|---|---|---|
@@ -20,6 +23,10 @@ Harmonizer takes a monophonic melody and predicts a chord progression to accompa
 | Viterbi, uniform penalty 0.25 | 0.6505 | 0.3974 | 0.7237 | 0.7723 | 35.54 |
 | Viterbi, learned transitions λ=0.05 | 0.6507 | 0.4005 | 0.7237 | 0.7729 | 36.92 |
 | *Ground truth* | | | | | *37.47* |
+
+This is the original BiLSTM run (20 epochs, whole-song training), so its
+argmax row (0.6497) differs from the 3-run mean in the model comparison
+table above.
 
 Accuracy barely moves across decoders, but change rate does: per-note
 argmax over-changes by about 13% relative to the ground truth's 37.47,
@@ -82,7 +89,7 @@ contradicts transposition augmentation, as above. (b) Collapsing to a
 reduced quality set (e.g. maj/min/dom7 + other) — simpler, with better 
 per-class accuracy, but erases real chords present in the source material.
 
-**Tradeoff:** Many of the 122 output units remain rare even after 
+**Tradeoff:** Many of the 121 chord classes remain rare even after 
 augmentation, and the model will likely underperform or never predict 
 them. To account for this honestly, results are reported as both micro 
 accuracy (overall, dominated by common classes) and macro accuracy 
@@ -152,37 +159,52 @@ conditioning and is not yet fed to the model.
 
 ## Training Setup
 
-The model is a bidirectional LSTM: 2 layers, hidden dim 256, with separate
-embedding tables for pitch (dim 128) and duration (dim 64) that are
-concatenated at each timestep before entering the LSTM. Dropout of 0.3 is
-applied for regularization.
+Both models take the same inputs (pitch and duration embeddings,
+concatenated at each note) and output chord logits per note, so the
+comparison changes only the encoder.
 
-Trained with Adam (lr=1e-3) and cross-entropy loss, masked to ignore
-`<PAD>` positions so padded timesteps don't contribute to the gradient.
-Batch size 32, for 20 epochs, with the checkpoint saved on best validation
-loss rather than final epoch (`artifacts/model.pt`). Training and
-validation loss, plus token-level validation accuracy, are logged to
-Weights & Biases each epoch.
+**BiLSTM.** 2 bidirectional layers with hidden dim 256, and dropout 0.3
+applied between the LSTM layers.
 
-| Hyperparameter | Value |
-|---|---|
-| Hidden dim | 256 |
-| LSTM layers | 2 |
-| Pitch embedding dim | 128 |
-| Duration embedding dim | 64 |
-| Dropout | 0.3 |
-| Optimizer | Adam |
-| Learning rate | 1e-3 |
-| Batch size | 32 |
-| Epochs | 20 |
-| Loss | Cross-entropy (PAD-masked) |
-| Checkpoint selection | Best validation loss |
+**Transformer.** The embeddings are projected to d_model 256 and passed
+through a 3-layer encoder with 4 attention heads, feedforward dim 1024,
+dropout 0.1, and pre-norm layers. Attention is unmasked, so each note sees
+the whole melody in both directions, and padded positions are ignored
+through a padding mask. Positions use fixed sinusoidal encodings instead
+of a learned table, so any song length works (the longest songs in the
+dataset reach about 2,700 notes).
+
+Both models train with Adam (lr 1e-3) and cross-entropy loss that ignores
+`<PAD>` positions, batch size 32, for 30 epochs. Training uses 512-note
+windows, which keeps the transformer's attention memory manageable.
+Validation uses whole songs. The checkpoint with the best validation loss
+is kept (`artifacts/lstm.pt` and `artifacts/transformer.pt`), with the
+training config stored inside so `eval.py` can rebuild the model. Each
+model was trained 3 times (one unseeded, seeds 42 and 57), and the results
+tables report the mean ± std. Loss and token-level validation accuracy are
+logged to Weights & Biases each epoch.
+
+| | BiLSTM | Transformer |
+|---|---|---|
+| Layers | 2 | 3 |
+| Hidden size / d_model | 256 | 256 |
+| Attention heads | n/a | 4 |
+| Feedforward dim | n/a | 1024 |
+| Pitch / duration embedding dim | 128 / 64 | 128 / 64 |
+| Dropout | 0.3 (between layers) | 0.1 |
+| Position information | recurrence | sinusoidal encoding |
+| Optimizer / learning rate | Adam / 1e-3 | Adam / 1e-3 |
+| Batch size | 32 | 32 |
+| Epochs | 30 | 30 |
+| Training input | 512-note windows | 512-note windows |
+| Validation input | whole songs | whole songs |
+| Checkpoint selection | best val loss | best val loss |
 
 ## Findings
 
-The baseline BiLSTM predicts chords independently at each note, which
+The baseline BiLSTM decodes each note independently, which
 produces harmony that rapidly flickers. The output still makes musical
-sense note-to-note, but these are patterns that do not appear in folk
+sense note to note, but these are patterns that do not appear in folk
 harmony.
 
 A uniform switch penalty fixes the flicker but sounded worse by ear. The
@@ -199,20 +221,40 @@ training split) replaced the flat penalty with a learned prior over which
 changes are actually common. At λ=0.05 this narrowed the predicted/true
 change-rate gap and sounded modestly better than the uniform-penalty
 version, but still overrode some valid musical choices, since the matrix
-only knows chord identity, not timing or the note being harmonized.
+only knows chord identity, not timing or the note being harmonized. The
+decoding ablation comes from a single BiLSTM run, so its accuracy
+differences (about 0.001) are far inside the run-to-run spread described
+below. The change rate is the measure that actually moves.
 
-There were three other findings from this pass that are independent of decoding:
+Other findings from this pass, independent of decoding:
 
-- **Overfitting.** Validation loss bottomed out at epoch 11 while training
-  loss kept falling; the checkpoint logic correctly kept the epoch-11
-  model rather than the final one.
-- **Padding contamination.** Batched validation (with padding) measured
-  0.6568 accuracy; the clean, unpadded measurement used for the results
-  table above is 0.6497. The gap comes from the backward LSTM reading
-  padding tokens before it reaches the real notes.
-- **Functional vs. exact accuracy.** Exact match is 65%, functional match
-  is 77% — roughly a third of the model's "wrong" answers are chords that
-  serve the same harmonic role as the true answer, not random misses.
+- **BiLSTM vs. Transformer.** Averaged over three training runs each, the
+  BiLSTM beats the Transformer on every metric, by 4 to 5.5 points (micro
+  0.634 vs. 0.584, functional 0.748 vs. 0.695). The Transformer also
+  changes chords more often (54.2 per song vs. 42.1, against a true rate
+  of 37.5), so its output flickers more than the BiLSTM's. A likely reason
+  is that the LSTM's sequential memory suits this task, and 816 songs is
+  not enough for the Transformer to learn note-to-note smoothness on its
+  own. This explanation has not been tested directly.
+- **Run-to-run variation.** Across the three BiLSTM runs, micro accuracy
+  ranged from 0.623 to 0.644, so comparing single runs can mislead. (The
+  original run, trained for 20 epochs without windowing, reached 0.650.)
+  The Transformer was much more stable (std 0.002 vs. 0.010).
+- **Overfitting.** In the original BiLSTM run (20 epochs, whole songs),
+  validation loss bottomed out at epoch 11 while training loss kept
+  falling; the checkpoint logic correctly kept the epoch-11 model rather
+  than the final one.
+- **Padding contamination.** For that same original checkpoint
+  (`artifacts/model.pt`), batched validation (with padding) measured
+  0.6568 accuracy, versus 0.6497 for the clean, unpadded evaluation used
+  in the decoding ablation. The gap comes from the backward LSTM reading
+  padding tokens before it reaches the real notes. This does not apply to
+  the Transformer, whose attention ignores padded positions through a
+  padding mask.
+- **Functional vs. exact accuracy.** For the BiLSTM, exact match averages
+  63% and functional match 75%, so roughly a third of its "wrong" answers
+  are chords that serve the same harmonic role as the true answer, not
+  random misses.
 
 ## How To Run
 
@@ -224,8 +266,13 @@ uv run wandb login
 uv run python train.py
 uv run python transition.py
 uv run python eval.py
+uv run python eval.py --checkpoint artifacts/transformer.pt
 uv run python render.py
 ```
+
+The architecture is set by `"arch"` in the config at the top of
+`train.py` (`"lstm"` or `"transformer"`). Run `train.py` once per
+architecture to produce both checkpoints.
 
 ## Roadmap
 
@@ -236,8 +283,6 @@ uv run python render.py
   with a linear-chain CRF trained end-to-end, so transition scores are
   learned jointly with the emission model rather than estimated separately
   post-hoc.
-- **Transformer comparison**: swap the BiLSTM for a Transformer encoder and
-  compare against the current results table.
 - **One-time test-set evaluation**: run the held-out test split once,
   after model/decoder selection is finalized on val.
 - **Gradio demo**: a simple interface to upload or play a melody and hear

@@ -1,28 +1,23 @@
+import argparse
 import json
 import torch
 
-from model import LSTMHarmonizer
+from checkpoint import load_model
 from tokenizer import Tokenizer
-from decode import transition_viterbi_decode
+from decode import transition_viterbi_decode, viterbi_decode
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--checkpoint", default="artifacts/lstm.pt")
+parser.add_argument("--split", default="data/processed/val.jsonl")
+parser.add_argument("--decoder", choices=["argmax", "uniform", "transition"], default="argmax")
+parser.add_argument("--switch-penalty", type=float, default=0.25)
+parser.add_argument("--lam", type=float, default=0.05)
+args = parser.parse_args()
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 tokenizer = Tokenizer.load("artifacts/tokenizer.json")
-config = {
-    "hidden_dim": 256,
-    "pitch_embed_dim": 128,
-    "dur_embed_dim": 64,
-}
-
-model = LSTMHarmonizer(pitch_vocab_size=len(tokenizer.pitch_stoi),
-                       dur_vocab_size=len(tokenizer.duration_stoi),
-                       chord_vocab_size=len(tokenizer.chord_stoi),
-                       pitch_embed_dim=config["pitch_embed_dim"],
-                       dur_embed_dim=config["dur_embed_dim"],
-                       hidden_dim=config["hidden_dim"]).to(device)
-
-model.load_state_dict(torch.load("artifacts/model.pt", map_location=device))
-model.eval()
+model, config = load_model(args.checkpoint, tokenizer, device)
 
 FUNCTION = {
     "major": {
@@ -88,7 +83,7 @@ def estimate_key(chord_labels):
 
     return best_key
 
-songs = [json.loads(l) for l in open("data/processed/val.jsonl")]
+songs = [json.loads(l) for l in open(args.split)]
 
 all_preds = []
 all_targets = []
@@ -100,8 +95,8 @@ total_notes = 0
 pred_changes = 0
 true_changes = 0
 
-lam = 0.05
-logT = torch.load("artifacts/transition_matrix.pt")
+if args.decoder == "transition":
+    logT = torch.load("artifacts/transition_matrix.pt")
 
 with torch.no_grad():
     for song in songs:
@@ -111,7 +106,13 @@ with torch.no_grad():
 
         chord_pred = model(pitch_tensor, dur_tensor)
         logits = chord_pred.squeeze(0).cpu()
-        pred_ids = transition_viterbi_decode(logits, logT, lam)
+        logits[:, tokenizer.chord_stoi["<PAD>"]] = float("-inf")
+        if args.decoder == "transition":
+            pred_ids = transition_viterbi_decode(logits, logT, args.lam)
+        elif args.decoder == "uniform":
+            pred_ids = viterbi_decode(logits, args.switch_penalty)
+        else:
+            pred_ids = logits.argmax(-1).tolist()
         preds = torch.tensor(pred_ids).to(device)
         target = torch.tensor(chord_ids).to(device)
 
@@ -169,6 +170,12 @@ note_exact_accuracy = exact_count / total_notes # Should be equal to micro_accur
 root_accuracy = root_match_count / total_notes
 functional_accuracy = functional_match_count / total_notes
 
+decoder_desc = {
+    "argmax": "argmax",
+    "uniform": f"uniform penalty {args.switch_penalty}",
+    "transition": f"transition lam {args.lam}",
+}[args.decoder]
+print(f"[{config['arch']} | {args.checkpoint} | {args.split} | {decoder_desc}]")
 print(f"micro_accuracy={micro_accuracy:.4f}, macro_accuracy={macro_accuracy:.4f}, root_accuracy={root_accuracy:.4f}, functional_accuracy={functional_accuracy:.4f}")
 print(f"avg_pred_changes={avg_pred_changes:.4f}, avg_true_changes={avg_true_changes:.4f}")
 

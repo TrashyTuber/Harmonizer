@@ -7,12 +7,18 @@ from torch.nn.utils.rnn import pad_sequence
 from tokenizer import Tokenizer
 
 class HarmonizerDataset(Dataset):
-    def __init__(self, jsonl_path, tokenizer):
+    def __init__(self, jsonl_path, tokenizer, max_len=None):
         self.songs = []
         with open(jsonl_path, "r") as f:
             for line in f:
                 self.songs.append(json.loads(line))
         self.tokenizer = tokenizer
+        if max_len is not None:
+            self.songs = [
+                {**s, "notes": s["notes"][i:i + max_len]}
+                for s in self.songs
+                for i in range(0, len(s["notes"]), max_len)
+            ]
 
     def __len__(self):
         return len(self.songs)

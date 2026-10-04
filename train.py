@@ -8,37 +8,54 @@ import wandb
 
 from tokenizer import Tokenizer
 from dataset import HarmonizerDataset
-from model import LSTMHarmonizer
+from model import build_model
 
-wandb.init(project="Harmonizer", config={"hidden_dim": 256, "num_layers": 2, "dropout": 0.3, "pitch_embed_dim": 128, "dur_embed_dim": 64, "lr": 1e-3, "batch_size": 32, "num_epochs": 2})
+config = {
+    "arch": "transformer",
+    "lr": 1e-3,
+    "batch_size": 32,
+    "max_len": 512,
+    "num_epochs": 30,
+    "model":  {
+        "lstm": {
+            "pitch_embed_dim": 128, "dur_embed_dim": 64,
+            "hidden_dim": 256, "num_layers": 2, "dropout": 0.3,
+        },
+        "transformer": {
+            "pitch_embed_dim": 128, "dur_embed_dim": 64,
+            "d_model": 256, "nhead": 4, "num_layers": 3,
+            "dim_feedforward": 1024, "dropout": 0.1,
+        },
+    },
+    "seed": 57,
+}
+
+torch.manual_seed(config["seed"])
+
+model_cfg = config["model"][config["arch"]]
+run_config = {k: v for k, v in config.items() if k != "model"} | {"model": model_cfg}
+wandb.init(project="Harmonizer", config=run_config)
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 tokenizer = Tokenizer.from_songs([json.loads(l) for l in open("data/processed/train.jsonl")])
 tokenizer.save("artifacts/tokenizer.json")
 
-train_dataset = HarmonizerDataset("data/processed/train.jsonl", tokenizer)
+train_dataset = HarmonizerDataset("data/processed/train.jsonl", tokenizer, max_len=config["max_len"])
 val_dataset = HarmonizerDataset("data/processed/val.jsonl", tokenizer)
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=train_dataset.collate_fn)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, collate_fn=val_dataset.collate_fn)
+train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True, collate_fn=train_dataset.collate_fn)
+val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], shuffle=False, collate_fn=val_dataset.collate_fn)
 
-pitch_vocab_size = len(tokenizer.pitch_stoi)
-dur_vocab_size = len(tokenizer.duration_stoi)
-chord_vocab_size = len(tokenizer.chord_stoi)
-
-pitch_embed_dim = 128
-dur_embed_dim = 64
-hidden_dim = 256
-
-model = LSTMHarmonizer(pitch_vocab_size=pitch_vocab_size, dur_vocab_size=dur_vocab_size, chord_vocab_size=chord_vocab_size, pitch_embed_dim=pitch_embed_dim, dur_embed_dim=dur_embed_dim, hidden_dim=hidden_dim).to(device)
+model = build_model(config["arch"], model_cfg, tokenizer).to(device)
+print(f"{config['arch']}: {sum(p.numel() for p in model.parameters()):,} parameters")
 
 criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.chord_stoi["<PAD>"])
-optimizer = optim.Adam(model.parameters(), lr=1e-3)
+optimizer = optim.Adam(model.parameters(), lr=config["lr"])
 
-num_epochs = 20
+ckpt_path = f"artifacts/{config['arch']}.pt"
 best_val_loss = float("inf")
 
-for epoch in range(num_epochs):
+for epoch in range(config["num_epochs"]):
 
     model.train()
     total_train_loss = 0
@@ -76,6 +93,6 @@ for epoch in range(num_epochs):
 
     if avg_val_loss < best_val_loss:
         best_val_loss = avg_val_loss
-        torch.save(model.state_dict(), "artifacts/model.pt")
+        torch.save({"config": dict(wandb.config), "state_dict": model.state_dict()}, ckpt_path)
 
-    print(f"Epoch {epoch+1}/{num_epochs}  train_loss={avg_train_loss:.4f}  val_loss={avg_val_loss:.4f}  val_acc={val_acc:.4f}")
+    print(f"Epoch {epoch+1}/{config['num_epochs']}  train_loss={avg_train_loss:.4f}  val_loss={avg_val_loss:.4f}  val_acc={val_acc:.4f}")
