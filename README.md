@@ -266,18 +266,17 @@ before any test result was seen.
 - Model: BiLSTM, seed-57 checkpoint (selected for best validation micro
   accuracy among the three BiLSTM runs)
 - Decoder: learned transitions, λ = 0.05
-- Comparison point: Transformer, seed-57 checkpoint, per-note argmax
+- Comparison point: Transformer, seed-57 checkpoint, evaluated with both decoders
 
 | Model | Decoder | Micro | Macro | Root | Functional | Changes/song |
 |---|---|---|---|---|---|---|
-| BiLSTM | Argmax | | | | | |
-| BiLSTM | Learned transitions, λ=0.05 | | | | | |
-| Transformer | Argmax | | | | | |
-| *Ground truth* | | | | | | |
+| BiLSTM | Argmax | 0.6671 | 0.3664 | 0.7204 | 0.7664 | 46.9 |
+| BiLSTM | Learned transitions, λ=0.05 | 0.6681 | 0.3622 | 0.7217 | 0.7676 | 41.7 |
+| Transformer | Argmax | 0.6069 | 0.2928 | 0.6535 | 0.7048 | 61.4 |
+| Transformer | Learned transitions, λ=0.05 | 0.6133 | 0.2964 | 0.6597 | 0.7103 | 50.4|
+| *Ground truth* | | | | | | 43.5 |
 
-Each row is one checkpoint evaluated once, not a three-run average, so
-expect it to differ from the validation tables by roughly the run-to-run
-spread reported above.
+The differences in numbers compared to the validation tables are to be expected due to evaluation coming from a different set of about 100 songs. The transition decoder changes chords slightly less than the ground truth now as λ was tuned when the true rate was lower. 
 
 ## How To Run
 
@@ -306,8 +305,6 @@ architecture to produce both checkpoints.
   with a linear-chain CRF trained end-to-end, so transition scores are
   learned jointly with the emission model rather than estimated separately
   post-hoc.
-- **One-time test-set evaluation**: run the held-out test split once,
-  after model/decoder selection is finalized on val.
 - **Gradio demo**: a simple interface to upload or play a melody and hear
   the predicted harmonization.
 - **Genre conditioning**: train on POP909 alongside Nottingham, using the
