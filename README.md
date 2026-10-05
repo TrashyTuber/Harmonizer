@@ -256,6 +256,29 @@ Other findings from this pass, independent of decoding:
   are chords that serve the same harmonic role as the true answer, not
   random misses.
 
+## Test Set Evaluation
+
+The test split (103 songs) was held out through all model and decoder
+selection. It is evaluated once, with the choices below, which were fixed
+before any test result was seen.
+
+**Final choices (fixed before evaluation):**
+- Model: BiLSTM, seed-57 checkpoint (selected for best validation micro
+  accuracy among the three BiLSTM runs)
+- Decoder: learned transitions, λ = 0.05
+- Comparison point: Transformer, seed-57 checkpoint, per-note argmax
+
+| Model | Decoder | Micro | Macro | Root | Functional | Changes/song |
+|---|---|---|---|---|---|---|
+| BiLSTM | Argmax | | | | | |
+| BiLSTM | Learned transitions, λ=0.05 | | | | | |
+| Transformer | Argmax | | | | | |
+| *Ground truth* | | | | | | |
+
+Each row is one checkpoint evaluated once, not a three-run average, so
+expect it to differ from the validation tables by roughly the run-to-run
+spread reported above.
+
 ## How To Run
 
 ```bash
