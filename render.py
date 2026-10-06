@@ -68,9 +68,9 @@ def chord_spans(notes: list, labels: list) -> list:
     return spans
 
 
-def build_midi(notes: list, labels: list) -> pretty_midi.PrettyMIDI:
-    sec = 60.0 / TEMPO  # seconds per quarter note
-    pm = pretty_midi.PrettyMIDI(initial_tempo=TEMPO)
+def build_midi(notes: list, labels: list, tempo: float = TEMPO) -> pretty_midi.PrettyMIDI:
+    sec = 60.0 / tempo  # seconds per quarter note
+    pm = pretty_midi.PrettyMIDI(initial_tempo=tempo)
 
     melody = pretty_midi.Instrument(program=MELODY_PROGRAM, name="melody")
     for n in notes:

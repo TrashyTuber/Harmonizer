@@ -1,6 +1,10 @@
 # Harmonizer
 
-Harmonizer takes a monophonic melody and predicts a chord progression to accompany it, trained on the Nottingham folk dataset. The core is a bidirectional LSTM that reads pitch and duration as parallel input sequences and outputs a chord label at every timestep, framing harmonization as sequence labeling rather than free generation. Beyond the standard accuracy numbers, evaluation includes a custom functional accuracy that estimates each song's key and checks whether the model's mistakes still make sense harmonically, rather than treating every wrong answer as equally wrong.
+**[Try the live demo →](https://huggingface.co/spaces/Trazhytuber/Melody_Harmonizer)**
+
+Type or upload a melody and hear it harmonized.
+
+Harmonizer takes a monophonic melody and predicts a chord progression to accompany it, trained on the Nottingham folk dataset. The core is a bidirectional LSTM that reads pitch and duration as parallel input sequences and outputs a chord label at every timestep, framing harmonization as sequence labeling rather than free generation. A size-matched Transformer encoder trained under the same setup scored about 5 points lower across three runs each, and 6 points lower on the held-out test set. Beyond the standard accuracy numbers, evaluation includes a custom functional accuracy that estimates each song's key and checks whether the model's mistakes still make sense harmonically, rather than treating every wrong answer as equally wrong.
 
 ## Results
 
@@ -37,6 +41,16 @@ for what's actually driving the difference.
 - **Macro accuracy** — exact chord match, averaged per chord class rather than per note, so rare chord types count as much as common ones.
 - **Root accuracy** — credit given if the predicted chord's root matches, regardless of quality (e.g. predicting C:maj when the answer was C:dom7 still counts).
 - **Functional accuracy** — credit given if the predicted and true chords share the same harmonic function (tonic/predominant/dominant) relative to the song's estimated key, since multiple chords can serve the same musical role.
+
+## Demo
+
+The model is deployed as a [Hugging Face Space](https://huggingface.co/spaces/Trazhytuber/Melody_Harmonizer) running on CPU hardware. A 2.5M-parameter model needs no GPU.
+
+- **Input and output.** Enter a melody as text notation or upload a MIDI file. You get back audio, a chord chart, and a MIDI download. A Raw/Smoothed switch lets you hear what the decoder changes: Raw is per-note argmax, Smoothed applies the learned-transition Viterbi decoder.
+- **Any key works.** There is no transposition step at inference, because training covered all 12 keys. This is a direct payoff of the augmentation decision above.
+- **Out-of-range input.** Melodies outside the trained pitch range are shifted by octaves before the model sees them. Unusual note lengths map to `<RARE_DUR>`.
+- **Example tunes** are public-domain melodies, not dataset songs, so they show the model handling music it has never seen. This also means the Space doesn't redistribute the GPL-licensed dataset.
+- **Known limitation.** The model predicts N.C. for the opening notes of most melodies, because it has no beat-position input to tell a pickup from a downbeat start. The demo fills these notes with the first predicted chord for now.
 
 ## Data 
 
@@ -255,6 +269,8 @@ Other findings from this pass, independent of decoding:
   63% and functional match 75%, so roughly a third of its "wrong" answers
   are chords that serve the same harmonic role as the true answer, not
   random misses.
+- **Opening N.C.** 78 of 102 real validation songs open with N.C. (no chord), and the model does so on 84. The model has learned the habit of starting with no chords from the data, but it has no beat-position input, so it can't check whether a song's opening notes are actually a pickup or the first full bar. 
+- **Repeated phrases.** Repeated phrases are measured on the 92 val songs with exact melodic repeats of 16+ notes, one checkpoint per model; the real tunes score 0.954. The BiLSTM gave repeated phrases the same chords more often than the Transformer (0.880 vs. 0.836). This was unexpected, since attention can in principle compare distant phrases directly. One untested explanation is that the Transformer's higher chord-change rate (54.2 vs. 42.1 per song) makes its output less consistent overall.
 
 ## Test Set Evaluation
 
@@ -276,7 +292,7 @@ before any test result was seen.
 | Transformer | Learned transitions, λ=0.05 | 0.6133 | 0.2964 | 0.6597 | 0.7103 | 50.4|
 | *Ground truth* | | | | | | 43.5 |
 
-The differences in numbers compared to the validation tables are to be expected due to evaluation coming from a different set of about 100 songs. The transition decoder changes chords slightly less than the ground truth now as λ was tuned when the true rate was lower. 
+The differences in numbers compared to the validation tables are to be expected due to evaluation coming from a different set of about 100 songs. The transition decoder changes chords slightly less than the ground truth now as λ was tuned on val, where the true change rate was 37.5 per song, against 43.5 on test.
 
 ## How To Run
 
@@ -286,18 +302,51 @@ uv run python scripts/parse.py
 uv run python scripts/split.py
 uv run wandb login
 uv run python train.py
-uv run python transition.py
-uv run python eval.py
-uv run python eval.py --checkpoint artifacts/transformer.pt
-uv run python render.py
 ```
 
 The architecture is set by `"arch"` in the config at the top of
 `train.py` (`"lstm"` or `"transformer"`). Run `train.py` once per
 architecture to produce both checkpoints.
 
+```bash
+uv run python transition.py
+uv run python eval.py
+uv run python eval.py --checkpoint artifacts/transformer.pt
+uv run python render.py
+
+# Local demo (needs FluidSynth: `brew install fluid-synth` on macOS)
+uv run python app.py
+
+# Deploy to the Hugging Face Space
+uv run python scripts/build_space.py
+uv run hf upload Trazhytuber/Melody_Harmonizer space_build . --repo-type space
+```
+
+## Project Structure
+
+- `scripts/parse.py`, `scripts/split.py`: MIDI parsing and the song-level train/val/test split
+- `scripts/build_space.py`: packages the demo for Hugging Face
+- `tokenizer.py`, `dataset.py`: vocabularies, encoding, batching
+- `model.py`: BiLSTM and Transformer, plus the `build_model` factory
+- `train.py`: training (architecture chosen by `"arch"` in its config)
+- `transition.py`, `decode.py`: transition matrix and Viterbi decoders
+- `eval.py`: metrics (micro, macro, root, functional, change rate)
+- `render.py`: writes predicted and true chords to MIDI for listening
+- `checkpoint.py`: rebuilds a model from a checkpoint
+- `app.py`: the Gradio demo
+- `space/`: the Space's config files
+
+## License
+
+Code is licensed under GPL-3.0. The model is trained on the
+[Nottingham Music Database](https://github.com/jukedeck/nottingham-dataset),
+also GPL-3.0.
+
 ## Roadmap
 
+- **Beat-position input**: give the model each note's position in the bar.
+  This is the likely fix for the opening N.C. and the early chord entries,
+  and it is also what the beat-aware penalty below needs.
 - **Beat-aware penalty**: incorporate note offset/duration into the decode
   step so chord-change cost depends on metrical position, not just chord
   identity.
@@ -305,7 +354,5 @@ architecture to produce both checkpoints.
   with a linear-chain CRF trained end-to-end, so transition scores are
   learned jointly with the emission model rather than estimated separately
   post-hoc.
-- **Gradio demo**: a simple interface to upload or play a melody and hear
-  the predicted harmonization.
 - **Genre conditioning**: train on POP909 alongside Nottingham, using the
   `<folk>`/`<pop>` genre token that's currently reserved but unused.

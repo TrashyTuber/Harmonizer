@@ -1,0 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cpu
+numpy==2.5.2
+pretty_midi==0.2.11.post0
+pyfluidsynth==1.4.0
